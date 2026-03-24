@@ -20,8 +20,9 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 LOCK = threading.Lock()
 
-CHUNK = 8 * 1024 * 1024
-PARALLEL = 8
+# 🔥 SPEED CONFIG
+CHUNK = 8 * 1024 * 1024      # 8MB chunks (faster)
+PARALLEL = 8                # more workers = faster
 
 SPLIT_THRESHOLD = 50 * 1024 * 1024 * 1024
 SPLIT_SIZE = 500 * 1024 * 1024
@@ -63,21 +64,13 @@ h1{text-align:center}
  border-radius:8px;
  border:1px solid #334155;
 }
-
-button{
- background:red;
- border:none;
- color:white;
- padding:4px 8px;
- border-radius:5px;
- cursor:pointer;
-}
+button{cursor:pointer}
 </style>
 </head>
 
 <body>
 
-<h1>🚀 GOD REALTIME UPLOADER</h1>
+<h1>🚀 GOD SPEED UPLOADER</h1>
 
 <div class="section">
 <div class="drop">
@@ -100,12 +93,8 @@ let canceled = {};
 
 // ===== UTIL =====
 function formatSize(bytes){
- let u=["B","KB","MB","GB","TB"];
- let i=0;
- while(bytes>=1024 && i<u.length-1){
-  bytes/=1024;
-  i++;
- }
+ let u=["B","KB","MB","GB","TB"];let i=0;
+ while(bytes>=1024){bytes/=1024;i++;}
  return bytes.toFixed(2)+" "+u[i];
 }
 
@@ -149,11 +138,6 @@ async function loadFiles(){
  let div=document.getElementById("files");
  div.innerHTML="";
 
- if(data.error){
-  div.innerText=data.error;
-  return;
- }
-
  data.forEach(f=>{
   let box=document.createElement("div");
   box.className="dataset-file";
@@ -173,7 +157,6 @@ function cancelUpload(id){
 // ===== UPLOAD =====
 async function upload(file){
  let id=crypto.randomUUID();
-
  await saveFile(id,file);
 
  await fetch("/init",{
@@ -186,7 +169,6 @@ async function upload(file){
 }
 
 async function startUpload(id,file){
-
  let status=await fetch("/status").then(r=>r.json());
  let uploaded=status[id]?.uploaded || 0;
 
@@ -202,25 +184,11 @@ async function startUpload(id,file){
   <button onclick="cancelUpload('${id}')">✖</button>
  </div>
  <div class="bar"><div id="bar_${id}" class="fill"></div></div>
- <div id="txt_${id}">Starting...</div>
- `;
+ <div id="txt_${id}">Starting...</div>`;
  document.getElementById("uploads").appendChild(div);
 
- // 🔥 REAL-TIME TRACKING
- let speed = 0;
-
- let uiLoop = setInterval(()=>{
-  if(canceled[id]) return clearInterval(uiLoop);
-
-  let percent=(uploaded/total)*100;
-  let eta=(total-uploaded)/(speed||1);
-
-  document.getElementById("bar_"+id).style.width=percent+"%";
-  document.getElementById("txt_"+id).innerText =
-   percent.toFixed(1)+"% | "+
-   formatSize(uploaded)+" / "+formatSize(total)+" | "+
-   (speed/1024/1024).toFixed(2)+" MB/s | ETA "+eta.toFixed(1)+"s";
- },200);
+ let lastTime=Date.now();
+ let lastUploaded=uploaded;
 
  async function send(i){
   if(canceled[id]) throw "c";
@@ -233,18 +201,27 @@ async function startUpload(id,file){
   form.append("id",id);
   form.append("offset",off);
 
-  let start=Date.now();
-
   let r=await fetch("/upload",{method:"POST",body:form});
   let d=await r.json();
   if(!d.ok) throw "fail";
 
-  let time=(Date.now()-start)/1000;
-
   uploaded+=chunk.size;
 
-  let instant=chunk.size/(time||1);
-  speed = speed*0.7 + instant*0.3;
+  let now=Date.now();
+  let dt=(now-lastTime)/1000;
+  let speed=(uploaded-lastUploaded)/dt;
+
+  lastTime=now;
+  lastUploaded=uploaded;
+
+  let percent=(uploaded/total)*100;
+  let eta=(total-uploaded)/(speed||1);
+
+  document.getElementById("bar_"+id).style.width=percent+"%";
+  document.getElementById("txt_"+id).innerText=
+   percent.toFixed(1)+"% | "+
+   formatSize(uploaded)+" / "+formatSize(total)+" | "+
+   (speed/1024/1024).toFixed(2)+" MB/s | ETA "+eta.toFixed(1)+"s";
  }
 
  async function worker(){
@@ -258,8 +235,6 @@ async function startUpload(id,file){
 
  await Promise.all(Array(PARALLEL).fill().map(worker));
 
- clearInterval(uiLoop);
-
  if(canceled[id]) return;
 
  document.getElementById("txt_"+id).innerText="Finalizing...";
@@ -267,16 +242,13 @@ async function startUpload(id,file){
 
  deleteFile(id);
  document.getElementById("txt_"+id).innerText="✅ DONE";
-
  loadFiles();
 }
 
 // ===== RESUME =====
 async function resume(){
  let files=await getAllFiles();
- for(let f of files){
-  startUpload(f.id,f.file);
- }
+ for(let f of files) startUpload(f.id,f.file);
 }
 
 // ===== INIT =====
@@ -345,25 +317,21 @@ def complete(uid):
 
     if size < SPLIT_THRESHOLD:
         with open(path, "rb") as f:
-            api.upload_file(
-                path_or_fileobj=f,
+            api.upload_file(path_or_fileobj=f,
                 path_in_repo=name,
                 repo_id=DATASET_ID,
                 repo_type="dataset",
-                token=HF_TOKEN
-            )
+                token=HF_TOKEN)
     else:
         parts = math.ceil(size / SPLIT_SIZE)
         with open(path, "rb") as f:
             for i in range(parts):
                 chunk = f.read(SPLIT_SIZE)
-                api.upload_file(
-                    path_or_fileobj=chunk,
+                api.upload_file(path_or_fileobj=chunk,
                     path_in_repo=f"{name}.part{i}",
                     repo_id=DATASET_ID,
                     repo_type="dataset",
-                    token=HF_TOKEN
-                )
+                    token=HF_TOKEN)
 
     os.remove(path)
     del DB[uid]
@@ -384,8 +352,7 @@ def files():
         return jsonify(api.list_repo_files(
             repo_id=DATASET_ID,
             repo_type="dataset",
-            token=HF_TOKEN
-        ))
+            token=HF_TOKEN))
     except Exception as e:
         return jsonify({"error": str(e)})
 
